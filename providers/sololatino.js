@@ -2810,8 +2810,11 @@ function getDirectStream(id, token, cookie, playerUrl) {
 }
 function getStreams(tmdbId, mediaType, season, episode, title) {
   return __async(this, null, function* () {
-    if (!tmdbId)
+    console.log(`[SoloLatino][DIAG] getStreams inicio: id=${tmdbId} tipo=${mediaType} temporada=${season} episodio=${episode} titulo=${title || ""}`);
+    if (!tmdbId) {
+      console.log("[SoloLatino][DIAG] Salida vacía: tmdbId no recibido");
       return [];
+    }
     const parts = tmdbId.toString().split(":");
     const realId = parts[0];
     const s = parseInt(parts[1] || season || 1);
@@ -2819,17 +2822,25 @@ function getStreams(tmdbId, mediaType, season, episode, title) {
     const isMovie = mediaType === "movie" || mediaType === "movies";
     setSessionUA(UA3);
     const imdbId = yield getImdbIdInternal(realId, mediaType);
-    if (!imdbId)
+    console.log(`[SoloLatino][DIAG] TMDB/IMDb: realId=${realId} imdbId=${imdbId || "NO ENCONTRADO"}`);
+    if (!imdbId) {
+      console.log("[SoloLatino][DIAG] Salida vacía: no se pudo resolver IMDb ID");
       return [];
+    }
     const epStr = e < 10 ? `0${e}` : e;
     const slug = isMovie ? imdbId : `${imdbId}-${s}x${epStr}`;
     const playerUrl = `${BASE_URL}/f/${slug}`;
+    console.log(`[SoloLatino][DIAG] Slug=${slug}; GET ${playerUrl}`);
     try {
-      const { data: html, headers: respHeaders } = yield axios3.get(playerUrl, { headers: HEADERS, timeout: 8e3 });
+      const { data: html, headers: respHeaders, status: pageStatus } = yield axios3.get(playerUrl, { headers: HEADERS, timeout: 12e3 });
+      console.log(`[SoloLatino][DIAG] Página player HTTP ${pageStatus}; tipo=${typeof html}; tamaño=${typeof html === "string" ? html.length : 0}`);
       const cookie = (respHeaders["set-cookie"] || []).map((c) => c.split(";")[0]).join("; ");
+      console.log(`[SoloLatino][DIAG] Cookies de sesión recibidas=${cookie ? "sí" : "no"}`);
       const tokenMatch = html.match(/(?:let\s+token|const\s+_t|tok|_t|token)\s*.*['"]([a-f0-9]{32})['"]/);
-      if (!tokenMatch)
+      if (!tokenMatch) {
+        console.log(`[SoloLatino][DIAG] Salida vacía: token no encontrado. Fragmento=${String(html).replace(/\s+/g, " ").slice(0, 220)}`);
         return [];
+      }
       const token = tokenMatch[1];
       const postH = __spreadProps(__spreadValues({}, HEADERS), {
         "Referer": playerUrl,
@@ -2840,7 +2851,13 @@ function getStreams(tmdbId, mediaType, season, episode, title) {
       yield axios3.post(`${BASE_URL}/s.php`, "a=click&tok=" + token, { headers: postH }).catch(() => {
       });
       yield sleep(1e3);
-      const { data: scanData } = yield axios3.post(`${BASE_URL}/s.php`, `a=1&tok=${token}`, { headers: postH });
+      const { data: scanData, status: scanStatus } = yield axios3.post(`${BASE_URL}/s.php`, `a=1&tok=${token}`, { headers: postH, timeout: 12e3 });
+      console.log(`[SoloLatino][DIAG] POST s.php a=1 HTTP ${scanStatus}; tipo=${typeof scanData}; claves=${scanData && typeof scanData === "object" ? Object.keys(scanData).join(",") : "ninguna"}`);
+      if (scanData && typeof scanData === "object") {
+        console.log(`[SoloLatino][DIAG] Servidores s=${Array.isArray(scanData.s) ? scanData.s.length : 0}; langs LAT=${scanData.langs_s && Array.isArray(scanData.langs_s.LAT) ? scanData.langs_s.LAT.length : 0}; ESP=${scanData.langs_s && Array.isArray(scanData.langs_s.ESP) ? scanData.langs_s.ESP.length : 0}; CAS=${scanData.langs_s && Array.isArray(scanData.langs_s.CAS) ? scanData.langs_s.CAS.length : 0}`);
+      } else {
+        console.log(`[SoloLatino][DIAG] Respuesta s.php inesperada: ${String(scanData).slice(0, 250)}`);
+      }
       const uniqueServers = /* @__PURE__ */ new Map();
       if (scanData && scanData.s) {
         scanData.s.forEach((ser) => {
@@ -2860,14 +2877,19 @@ function getStreams(tmdbId, mediaType, season, episode, title) {
             uniqueServers.set(ser[1], __spreadProps(__spreadValues({}, ser), { lang: "Castellano" }));
         });
       }
-      const servers = Array.from(uniqueServers.values()).filter((ser) => {
+      const allServers = Array.from(uniqueServers.values());
+      console.log(`[SoloLatino][DIAG] Servidores únicos=${allServers.length}: ${allServers.map((ser) => String(ser[0]) + ":" + String(ser[1])).join(" | ") || "ninguno"}`);
+      const servers = allServers.filter((ser) => {
         const name = ser[0];
         return !["Seek", "Lulu"].some((x) => name.includes(x));
       }).slice(0, 5);
+      console.log(`[SoloLatino][DIAG] Servidores a resolver=${servers.length}`);
       const resultsRaw = yield Promise.all(servers.map((ser) => __async(this, null, function* () {
         const [name, id] = ser;
         const lang = ser.lang || "Latino";
+        console.log(`[SoloLatino][DIAG] Resolviendo servidor=${name}; id=${id}; idioma=${lang}`);
         let finalUrl = yield getDirectStream(id, token, cookie, playerUrl);
+        console.log(`[SoloLatino][DIAG] getDirectStream ${name}: ${finalUrl ? "URL recibida " + finalUrl.slice(0, 180) : "sin URL"}`);
         if (finalUrl) {
           let resolvedResult = null;
           let finalHeaders = { "User-Agent": UA3, "Referer": playerUrl, "Origin": BASE_URL };
@@ -2907,9 +2929,12 @@ function getStreams(tmdbId, mediaType, season, episode, title) {
         return null;
       })));
       const resolved = resultsRaw.filter((r) => r !== null);
-      return yield finalizeStreams(resolved, "SoloLatino", title);
+      console.log(`[SoloLatino][DIAG] Fuentes antes de finalizeStreams=${resolved.length}`);
+      const finalStreams = yield finalizeStreams(resolved, "SoloLatino", title);
+      console.log(`[SoloLatino][DIAG] Fuentes después de finalizeStreams=${Array.isArray(finalStreams) ? finalStreams.length : "respuesta no-array"}`);
+      return finalStreams;
     } catch (e2) {
-      console.log(`[SoloLatino] Error v8.5.0: ${e2.message}`);
+      console.log(`[SoloLatino][DIAG] Error getStreams: ${e2.message}; status=${e2.response ? e2.response.status : "sin HTTP"}; data=${e2.response && e2.response.data ? String(typeof e2.response.data === "string" ? e2.response.data : JSON.stringify(e2.response.data)).slice(0, 250) : ""}`);
     }
     return [];
   });
